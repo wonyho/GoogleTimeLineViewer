@@ -8,17 +8,31 @@ Google Takeout에서 받은 **Location History (Timeline)** JSON을 [Leaflet](ht
 - 지도 타일·Leaflet CDN을 쓰므로 **인터넷 연결**
 - 타임라인 데이터 파일 (아래 참고)
 
-## 데이터 파일 준비
+## Google Takeout에서 JSON 받기
 
-1. `TimeLineViewer.html` 안의 `FILE` 상수를 본인의 JSON 파일 이름에 맞게 수정합니다.
+1. [Google Takeout](https://takeout.google.com/)에 접속합니다.
+2. `모두 선택 해제` 후, **Location History (Timeline)** 또는 위치 기록 관련 항목만 선택합니다.
+3. 내보내기 형식은 기본(JSON) 그대로 두고 `내보내기 생성`을 실행합니다.
+4. 다운로드한 압축 파일을 풀면 보통 `Location History (Timeline)/data/...` 아래에 연/월별 JSON 파일이 있습니다.
+5. 이 뷰어는 단일 JSON 파일을 읽으므로, 사용하려는 파일(예: 하루 데이터 또는 가공한 결과)을 프로젝트 루트에 복사해 둡니다.
+
+## 데이터 파일 설정 (HTML)
+
+1. `TimeLineViewer.html` 안의 `FILE` 상수를, 실제 사용할 JSON 파일명으로 맞춥니다.
 
    ```javascript
    const FILE = "TimeLine20260321.json";
    ```
 
-2. 해당 JSON은 **Google Takeout**의 Location History 형식(예: `semanticSegments` 포함)이어야 합니다.
+2. 파일 위치는 `TimeLineViewer.html`과 같은 폴더가 가장 간단합니다. 다른 폴더에 두면 경로까지 적어야 합니다.
 
-3. JSON에는 **이동·체류 등 민감한 위치 정보**가 들어갑니다. GitHub 등에 올릴 때는 **공개 저장소에 원본 JSON을 포함하지 않는 것**을 권장합니다.
+   ```javascript
+   const FILE = "data/2024_03_21.json";
+   ```
+
+3. 해당 JSON은 Location History 형식(예: `semanticSegments` 포함)이어야 정상 동작합니다.
+
+4. JSON에는 **이동·체류 등 민감한 위치 정보**가 들어갑니다. GitHub 등에 올릴 때는 **공개 저장소에 원본 JSON을 포함하지 않는 것**을 권장합니다.
 
 ## 실행 방법
 
