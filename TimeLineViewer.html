@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Timeline Map Viewer (Hybrid Mode)</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<style>
+body { margin:0; font-family:Arial; }
+#map { height:100vh; }
+
+#top { position:absolute; top:10px; left:10px; background:rgba(255,255,255,0.7); backdrop-filter: blur(5px); padding:10px; z-index:1000; border-radius:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+#right { position:absolute; top:10px; right:10px; width:350px; max-height:90vh; overflow:auto; background:rgba(255,255,255,0.7); backdrop-filter: blur(5px); padding:10px; z-index:1000; border-radius:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+
+button { margin:3px; cursor:pointer; }
+.place { border-bottom:1px solid #ccc; padding:8px 5px; font-size: 13px; line-height:1.6; }
+.clickable-loc { cursor: pointer; color: #0066cc; font-weight: bold; text-decoration: underline; }
+.edit-btn { font-size: 11px; padding: 2px 6px; margin-left: 2px; cursor: pointer; background-color:#f8f9fa; border:1px solid #ddd; border-radius:3px; }
+
+#modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:2000; }
+#modal-content { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:20px; border-radius:8px; width:350px; max-height:80vh; overflow:hidden; display:flex; flex-direction:column; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+#modal-list { overflow-y:auto; flex-grow:1; margin-bottom:10px; border:1px solid #eee; border-radius:4px; }
+.place-item { padding:12px 10px; border-bottom:1px solid #eee; cursor:pointer; transition: background 0.2s; }
+.place-item:hover { background:#e8f0fe; }
+.place-item b { display:block; margin-bottom:3px; color:#1a73e8; }
+.place-item span { font-size:11px; color:#666; }
+.modal-close-btn { width:100%; padding:10px; background:#f1f3f4; border:none; border-radius:4px; cursor:pointer; font-weight:bold; }
+
+.leaflet-top.leaflet-left { top:120px; }
+</style>
+</head>
+
+<body>
+
+<div id="top">
+<input type="date" id="date">
+<button onclick="loadDate()">Load</button>
+<button onclick="prevDay()">Prev</button>
+<button onclick="nextDay()">Next</button>
+<br>
+<input type="range" id="slider" min="0" max="0" value="0" style="width:250px;">
+<span id="label"></span>
+<br>
+<button onclick="play()">▶ Play</button>
+<button onclick="pause()">⏸ Pause</button>
+<button onclick="stop()">⏹ Stop</button>
+<br>
+<button onclick="exportPlaces()">데이터 백업(places.json)</button>
+<button onclick="exportMap()">🌐 블로그용 HTML 내보내기</button>
+<button onclick="autoGeocodeAll()">🌟 구글 지명 자동 변환 (API)</button>
+<br>
+<span id="count"></span>
+</div>
+
+<div id="right">
+<h3>미등록 장소</h3><div id="unreg"></div>
+<h3>오늘의 방문지</h3><div id="places"></div>
+</div>
+
+<div id="map"></div>
+<div id="dummy-map" style="display:none;"></div>
+
+<div id="modal-overlay">
+  <div id="modal-content">
+    <h3 style="margin-top:0; margin-bottom:15px;">📍 정확한 장소를 선택하세요</h3>
+    <div id="modal-list"></div>
+    <button class="modal-close-btn" id="modal-cancel-btn">취소 / 직접 이름 입력하기</button>
+  </div>
+</div>
+
+<script>
+// =========================================================================
+// ❗ 구글 API 키 (GitHub 배포 시 비워두시면 수동 모드로 안전하게 작동합니다)
+// =========================================================================
+const GOOGLE_API_KEY = ""; // 예: "AIzaSy..."
+
+// API 키 존재 여부 확인 (스위치 역할)
+const HAS_API = GOOGLE_API_KEY && GOOGLE_API_KEY.length > 10 && GOOGLE_API_KEY !== "YOUR_GOOGLE_API_KEY_HERE";
+
+if (HAS_API) {
+    let script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places&language=ko`;
+    document.head.appendChild(script);
+}
+
+const FILE="TimeLine20260321.json";
+const map=L.map('map').setView([36.5,127.5],8);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+let data, dates=[], layers=[], anim, timer;
+let placeDB=JSON.parse(localStorage.getItem("places")||"[]");
+
+function parseLL(s){ let p=s.replaceAll("°","").split(","); return [parseFloat(p[0]),parseFloat(p[1])]; }
+function same(a,b){ return Math.abs(a[0]-b[0])<0.0005 && Math.abs(a[1]-b[1])<0.0005; }
+function findPlaceObj(lat,lng){ return placeDB.find(p => same([lat,lng],[p.lat,p.lng])); }
+
+function updatePlaceData(lat, lng, updates) {
+  let idx = placeDB.findIndex(p => same([lat,lng],[p.lat,p.lng]));
+  if(idx >= 0) placeDB[idx] = Object.assign({}, placeDB[idx], updates);
+  else placeDB.push(Object.assign({lat: lat, lng: lng}, updates));
+  localStorage.setItem("places",JSON.stringify(placeDB));
+}
+function removePlaceData(lat, lng) { placeDB = placeDB.filter(p => !same([lat, lng], [p.lat, p.lng])); localStorage.setItem("places", JSON.stringify(placeDB)); }
+function clearMap(){ layers.forEach(l=>map.removeLayer(l)); layers=[]; if(anim) map.removeLayer(anim); }
+function getDates(){ let s=new Set(); data.semanticSegments.forEach(seg=>{ if(seg.startTime) s.add(seg.startTime.slice(0,10)); }); return [...s].sort(); }
+function moveToLocation(lat, lng) { map.flyTo([lat, lng], 17, { animate: true, duration: 1.5 }); }
+
+// 스마트 필터
+function getMeaningfulPlaces(results) {
+    return results.filter(r => {
+        if(r.types.includes('establishment') || r.types.includes('point_of_interest') || r.types.includes('transit_station')) return true;
+        let badTypes = ['political', 'locality', 'sublocality', 'neighborhood', 'administrative_area_level_1', 'administrative_area_level_2'];
+        if(r.types.some(t => badTypes.includes(t))) return false;
+        return true;
+    });
+}
+
+function searchNearbyAsync(lat, lng, radius=80) {
+    return new Promise((resolve) => {
+        if(!HAS_API || !window.google || !window.google.maps) return resolve([]);
+        let dummy = document.getElementById('dummy-map');
+        let service = new google.maps.places.PlacesService(dummy);
+        service.nearbySearch({ location: new google.maps.LatLng(lat, lng), radius: radius, language: 'ko' }, (results, status) => {
+            if (status === google.maps.places.PlacesServiceStatus.OK && results) resolve(results);
+            else resolve([]);
+        });
+    });
+}
+
+// 🌟 수동 모드 안전장치가 적용된 모달창
+async function openSearchModal(origLat, origLng, searchLat, searchLng) {
+    if (!HAS_API) {
+        alert("구글 API 키가 설정되지 않아 수동 입력 모드로 전환합니다.\n직접 이름을 입력하거나 URL을 붙여넣어 주세요.");
+        let saved = findPlaceObj(origLat, origLng);
+        editPlaceName(origLat, origLng, saved ? saved.name : "");
+        return;
+    }
+
+    let targetEl = document.getElementById(`unreg-btn-${origLat}`);
+    if(targetEl) targetEl.innerText = "⏳ 검색 중...";
+
+    let cancelBtn = document.getElementById('modal-cancel-btn');
+    cancelBtn.onclick = function() {
+        document.getElementById("modal-overlay").style.display = "none";
+        let saved = findPlaceObj(origLat, origLng);
+        editPlaceName(origLat, origLng, saved ? saved.name : "");
+    };
+
+    let rawResults = await searchNearbyAsync(searchLat, searchLng);
+    let meaningfulResults = getMeaningfulPlaces(rawResults);
+    let displayList = meaningfulResults.length > 0 ? meaningfulResults : rawResults; 
+
+    let overlay = document.getElementById("modal-overlay");
+    let listDiv = document.getElementById("modal-list");
+    listDiv.innerHTML = "";
+    
+    if(displayList.length > 0) {
+        displayList.slice(0, 10).forEach(r => {
+            let div = document.createElement("div"); div.className = "place-item";
+            div.innerHTML = `<b>${r.name}</b><span>${r.vicinity || '주소 정보 없음'}</span>`;
+            div.onclick = () => {
+                updatePlaceData(origLat, origLng, { name: r.name, placeId: r.place_id, customLat: searchLat, customLng: searchLng, customUrl: null });
+                overlay.style.display = "none";
+                render(document.getElementById("date").value);
+            };
+            listDiv.appendChild(div);
+        });
+    } else {
+        listDiv.innerHTML = `<div style="padding:15px; text-align:center; color:#666; font-size:13px;">주변에서 의미있는 장소를 찾지 못했습니다.<br>직접 입력해주세요.</div>`;
+    }
+    
+    overlay.style.display = "block";
+    if(targetEl) targetEl.innerText = "목록(API)";
+}
+
+function render(d){
+ clearMap();
+ let segs=data.semanticSegments.filter(s=>s.startTime && s.startTime.startsWith(d));
+ let bounds=[], unreg=[], places=[];
+
+ segs.forEach(seg=>{
+  if(seg.timelinePath){
+    let pts=seg.timelinePath.map(p=>parseLL(p.point));
+    let l=L.polyline(pts,{color:"blue"}).addTo(map);
+    layers.push(l); bounds.push(...pts);
+  }
+
+  if(seg.visit && seg.visit.topCandidate && seg.visit.topCandidate.placeLocation){
+    let origLoc=parseLL(seg.visit.topCandidate.placeLocation.latLng);
+    let savedObj = findPlaceObj(origLoc[0], origLoc[1]);
+    let name = savedObj && savedObj.name ? savedObj.name : null;
+    let placeId = savedObj ? savedObj.placeId : null;
+    let customUrl = savedObj ? savedObj.customUrl : null; 
+    
+    let displayLoc = (savedObj && savedObj.customLat) ? [savedObj.customLat, savedObj.customLng] : origLoc;
+    let m = L.marker(displayLoc, { draggable: true, title: "드래그하여 위치 수정" }).addTo(map);
+
+    m.on('dragend', async function(e) {
+      let newPos = e.target.getLatLng();
+      // 🌟 API 키가 없으면 검색창 대신 그냥 좌표만 수정해줍니다.
+      if (HAS_API) {
+          if(confirm("이 위치 주변의 장소 리스트를 불러올까요?")) {
+              await openSearchModal(origLoc[0], origLoc[1], newPos.lat, newPos.lng);
+          } else { m.setLatLng(displayLoc); }
+      } else {
+          if(confirm("이 위치로 핀 좌표를 수정하시겠습니까? (수동 모드)")) {
+              updatePlaceData(origLoc[0], origLoc[1], {customLat: newPos.lat, customLng: newPos.lng});
+              render(document.getElementById("date").value);
+          } else { m.setLatLng(displayLoc); }
+      }
+    });
+
+    let mapLink = customUrl ? customUrl : (placeId ? `https://www.google.com/maps/search/?api=1&query=${displayLoc[0]},${displayLoc[1]}&query_place_id=${placeId}` : `https://www.google.com/maps/search/?api=1&query=${displayLoc[0]},${displayLoc[1]}`);
+    let svLink = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${displayLoc[0]},${displayLoc[1]}`;
+
+    if(name){
+      m.bindPopup(`
+        <div style="text-align:center; min-width:160px;">
+          <b style="font-size:14px;">${name}</b><br><br>
+          <div style="display:flex; gap:5px; justify-content:center;">
+            <a href="${mapLink}" target="_blank" style="background:#4285F4; color:white; padding:5px 8px; text-decoration:none; border-radius:4px; font-size:11px;">📍 구글 장소</a>
+            <a href="${svLink}" target="_blank" style="background:#F4B400; color:white; padding:5px 8px; text-decoration:none; border-radius:4px; font-size:11px;">🚶 로드뷰</a>
+          </div>
+        </div>`);
+    }else{
+      // 🌟 버튼 텍스트를 API 유무에 따라 다르게 표시
+      let btnText = HAS_API ? "🔍 주변 장소 목록 찾기" : "✏️ 직접 이름 입력하기";
+      m.bindPopup(`
+        <div style="text-align:center; min-width:160px;">
+          <b style="font-size:14px; color:#d93025;">미등록 장소</b><br><br>
+          <button onclick="openSearchModal(${origLoc[0]}, ${origLoc[1]}, ${displayLoc[0]}, ${displayLoc[1]})" style="width:100%; margin-bottom:8px; padding:6px; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:bold;">${btnText}</button>
+          <div style="display:flex; gap:5px; justify-content:center;">
+            <a href="${mapLink}" target="_blank" style="background:#4285F4; color:white; padding:5px 8px; text-decoration:none; border-radius:4px; font-size:11px;">📍 구글맵</a>
+            <a href="${svLink}" target="_blank" style="background:#F4B400; color:white; padding:5px 8px; text-decoration:none; border-radius:4px; font-size:11px;">🚶 로드뷰</a>
+          </div>
+        </div>`);
+      unreg.push({origLat: origLoc[0], origLng: origLoc[1], displayLat: displayLoc[0], displayLng: displayLoc[1]});
+    }
+
+    layers.push(m); bounds.push(displayLoc);
+    let st = new Date(seg.startTime), et = new Date(seg.endTime);
+    if(name) places.push({origLat: origLoc[0], origLng: origLoc[1], displayLat: displayLoc[0], displayLng: displayLoc[1], h: (et-st)/3600000});
+  }
+ });
+
+ if(bounds.length) map.fitBounds(bounds);
+ renderPlaces(places); renderUnreg(unreg);
+ document.getElementById("count").innerText=`미등록 ${unreg.length}`;
+}
+
+function renderPlaces(list){
+ list.sort((a,b)=>b.h-a.h);
+ let div=document.getElementById("places"); div.innerHTML="";
+ list.forEach(p=>{
+  let saved = findPlaceObj(p.origLat, p.origLng);
+  let name = saved && saved.name ? saved.name : "미등록";
+  let safeName = name.replace(/'/g, "\\'"); 
+  let hasLink = saved && saved.customUrl ? "🔗" : "";
+
+  let searchBtnTxt = HAS_API ? "🔄 목록(API)" : "✏️ 수동입력";
+
+  div.innerHTML+=`
+  <div class="place">
+    <span class="clickable-loc" onclick="moveToLocation(${p.displayLat}, ${p.displayLng})">${name} ${hasLink}</span> (${p.h.toFixed(1)}h)<br>
+    <div style="margin-top:4px; display:flex; gap:3px; flex-wrap:wrap;">
+      <button class="edit-btn" onclick="openSearchModal(${p.origLat}, ${p.origLng}, ${p.displayLat}, ${p.displayLng})">${searchBtnTxt}</button>
+      <button class="edit-btn" onclick="editPlaceName(${p.origLat}, ${p.origLng}, '${safeName}')">✏️ 이름</button>
+      <button class="edit-btn" onclick="setCustomUrl(${p.origLat}, ${p.origLng})">🔗 URL</button>
+    </div>
+  </div>`;
+ });
+}
+
+function renderUnreg(list){
+ let div=document.getElementById("unreg"); div.innerHTML="";
+ list.forEach((p, idx)=>{
+  let id = `unreg-div-${idx}`; 
+  let searchBtnTxt = HAS_API ? "목록(API)" : "수동입력";
+  div.innerHTML+=`<div class="place" id="${id}"><span class="clickable-loc" onclick="moveToLocation(${p.displayLat}, ${p.displayLng})">${p.displayLat.toFixed(4)}, ${p.displayLng.toFixed(4)}</span><br><button id="unreg-btn-${p.origLat}" class="edit-btn" onclick="openSearchModal(${p.origLat}, ${p.origLng}, ${p.displayLat}, ${p.displayLng})">${searchBtnTxt}</button></div>`;
+ });
+}
+
+function editPlaceName(lat, lng, currentName) {
+  let newName = prompt("이름을 직접 입력/수정합니다.\n(지우면 미등록 상태가 됩니다)", currentName);
+  if (newName !== null) {
+    if (newName.trim() === "") {
+      if (confirm("미등록 상태로 되돌리시겠습니까?")) { removePlaceData(lat, lng); render(document.getElementById("date").value); }
+    } else {
+      updatePlaceData(lat, lng, {name: newName.trim()}); render(document.getElementById("date").value);
+    }
+  }
+}
+
+function setCustomUrl(lat, lng) {
+  let saved = findPlaceObj(lat, lng);
+  if (!saved) return alert("먼저 장소 이름을 지정해주세요.");
+  let newUrl = prompt("공유 링크 URL을 붙여넣으세요:\n(빈칸으로 저장하면 링크 삭제)", saved.customUrl || "");
+  if (newUrl !== null) { updatePlaceData(lat, lng, {customUrl: newUrl.trim() === "" ? null : newUrl.trim()}); render(document.getElementById("date").value); }
+}
+
+async function autoGeocodeAll() {
+    if (!HAS_API) return alert("이 기능은 구글 API 키가 설정되어 있어야 작동합니다.\n(현재 수동 모드 작동 중)");
+    
+    let unregItems = document.querySelectorAll('div[id^="unreg-div-"]');
+    if(unregItems.length === 0) return alert("미등록 장소가 없습니다.");
+    if(!confirm(`현재 날짜의 ${unregItems.length}개 미등록 장소를 일괄 변환하시겠습니까?\n(의미 있는 장소 위주로 탐색합니다)`)) return;
+    
+    for (let i = 0; i < unregItems.length; i++) {
+        let el = unregItems[i];
+        let btn = el.querySelector('button');
+        if(!btn) continue;
+        let funcStr = btn.getAttribute('onclick');
+        
+        let args = funcStr.match(/openSearchModal\(([^,]+),\s*([^,]+),\s*([^,]+),\s*([^)]+)\)/);
+        if(!args) continue;
+        
+        let origLat = parseFloat(args[1]); let origLng = parseFloat(args[2]);
+        let displayLat = parseFloat(args[3]); let displayLng = parseFloat(args[4]);
+        
+        await new Promise(r => setTimeout(r, 800)); 
+        let rawResults = await searchNearbyAsync(displayLat, displayLng);
+        let meaningfulResults = getMeaningfulPlaces(rawResults);
+        let best = meaningfulResults.length > 0 ? meaningfulResults[0] : (rawResults.length > 1 ? rawResults[1] : rawResults[0]);
+
+        if(best) {
+            updatePlaceData(origLat, origLng, {name: best.name, placeId: best.place_id, customLat: displayLat, customLng: displayLng});
+            el.innerHTML = `<span class="clickable-loc">✅ ${best.name}</span>`;
+        } else { el.innerHTML += " <span style='color:red'>❌ 결과 없음</span>"; }
+    }
+    render(document.getElementById("date").value);
+}
+
+function exportMap(){
+  let currentDate = document.getElementById("date").value;
+  let segs = data.semanticSegments.filter(s => s.startTime && s.startTime.startsWith(currentDate));
+  let pathCoords = [], placesInfo = [];
+
+  segs.forEach(s => {
+    if(s.timelinePath) s.timelinePath.forEach(p => pathCoords.push(parseLL(p.point)));
+    if(s.visit && s.visit.topCandidate && s.visit.topCandidate.placeLocation){
+      let origLoc = parseLL(s.visit.topCandidate.placeLocation.latLng);
+      let saved = findPlaceObj(origLoc[0], origLoc[1]);
+      let st = new Date(s.startTime), et = new Date(s.endTime);
+      let displayLoc = (saved && saved.customLat) ? [saved.customLat, saved.customLng] : origLoc;
+      
+      placesInfo.push({ lat: displayLoc[0], lng: displayLoc[1], name: saved && saved.name ? saved.name : "미등록 장소", h: (et - st) / 3600000, placeId: saved ? saved.placeId : null, customUrl: saved ? saved.customUrl : null });
+    }
+  });
+
+  if(pathCoords.length === 0 && placesInfo.length === 0) return alert("데이터가 없습니다.");
+  placesInfo.sort((a,b) => b.h - a.h);
+
+  let html = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><title>${currentDate} 동선</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"><\/script>
+<style>
+  body,html{margin:0;padding:0;height:100%;font-family:Arial;overflow:hidden;}
+  #map{height:100vh;width:100%;}
+  #top-panel, #right-panel { position:absolute; top:10px; background:rgba(255,255,255,0.7); backdrop-filter: blur(5px); padding:10px; z-index:1000; border-radius:8px; box-shadow: 0 2px 5px rgba(0,0,0,0.3); }
+  #top-panel { left:10px; } #right-panel { right:10px; width:220px; max-height:90vh; overflow:auto; }
+  button { margin:3px; cursor:pointer; }
+  .place { border-bottom:1px solid #ccc; padding:8px 5px; font-size: 13px; line-height:1.5; }
+  .clickable-loc { cursor: pointer; color: #0066cc; font-weight: bold; text-decoration: underline; }
+  .leaflet-top.leaflet-left { top:100px; }
+</style></head><body>
+
+<div id="top-panel"><h4 style="margin:0 0 10px 0;">📅 ${currentDate}</h4>
+<button onclick="play()">▶ Play</button> <button onclick="pause()">⏸ Pause</button></div>
+<div id="right-panel"><h3 style="margin-top:0;">방문지</h3><div id="places-list"></div></div>
+<div id="map"></div>
+
+<script>
+  const pathData = ${JSON.stringify(pathCoords)}, placeData = ${JSON.stringify(placesInfo)};
+  const map = L.map('map');
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png').addTo(map);
+  
+  let bounds = [], anim = null, timer = null;
+  if(pathData.length > 0) { L.polyline(pathData, {color: 'blue', weight: 4, opacity: 0.6}).addTo(map); bounds.push(...pathData); }
+
+  const listDiv = document.getElementById("places-list");
+  placeData.forEach(p => {
+    let marker = L.marker([p.lat, p.lng]).addTo(map);
+    let mapLink = p.customUrl ? p.customUrl : (p.placeId ? \`https://www.google.com/maps/search/?api=1&query=\${p.lat},\${p.lng}&query_place_id=\${p.placeId}\` : \`https://www.google.com/maps/search/?api=1&query=\${p.lat},\${p.lng}\`);
+    let svLink = \`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=\${p.lat},\${p.lng}\`;
+
+    marker.bindPopup(\`<div style="text-align:center; min-width:160px;"><b style="font-size:14px;">\${p.name}</b><br><span style="color:#666; font-size:12px;">\${p.h.toFixed(1)}시간 체류</span><br><br><div style="display:flex; gap:5px; justify-content:center;"><a href="\${mapLink}" target="_blank" style="background:#4285F4; color:white; padding:6px 10px; text-decoration:none; border-radius:4px; font-size:12px; font-weight:bold;">📍 장소 리뷰</a><a href="\${svLink}" target="_blank" style="background:#F4B400; color:white; padding:6px 10px; text-decoration:none; border-radius:4px; font-size:12px; font-weight:bold;">🚶 로드뷰</a></div></div>\`);
+    bounds.push([p.lat, p.lng]);
+    listDiv.innerHTML += \`<div class="place"><span class="clickable-loc" onclick="map.flyTo([\${p.lat}, \${p.lng}], 16, {animate:true, duration:1.5})">\${p.name}</span></div>\`;
+  });
+
+  if(bounds.length > 0) map.fitBounds(bounds, {padding: [50, 50]});
+  
+  function play(){ if(pathData.length===0) return; let i=0; if(anim) map.removeLayer(anim);
+    anim = L.circleMarker(pathData[0], {color:'red', fillColor:'#f03', fillOpacity:0.8, radius:8}).addTo(map);
+    clearInterval(timer); timer = setInterval(()=>{ if(i>=pathData.length) return clearInterval(timer);
+    anim.setLatLng(pathData[i]); map.panTo(pathData[i]); i++; }, 200); }
+  function pause(){ clearInterval(timer); }
+  setTimeout(play, 1000);
+<\/script></body></html>`;
+
+  let fileName = `Map_${currentDate}.html`;
+  let a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([html], {type: "text/html;charset=utf-8"}));
+  a.download = fileName; a.click();
+}
+
+function play(){ let pts=[]; let currentDate = document.getElementById("date").value; let segs = data.semanticSegments.filter(s => s.startTime && s.startTime.startsWith(currentDate)); segs.forEach(s=>{ if(s.timelinePath) s.timelinePath.forEach(p=>pts.push(parseLL(p.point))); }); if(pts.length === 0) return alert("경로가 없습니다."); let i=0; if(anim) map.removeLayer(anim); anim = L.circleMarker(pts[0], { color: 'red', fillColor: '#f03', fillOpacity: 0.8, radius: 8 }).addTo(map); clearInterval(timer); timer = setInterval(()=>{ if(i >= pts.length) return clearInterval(timer); anim.setLatLng(pts[i]); map.panTo(pts[i]); i++; }, 200); }
+function pause(){ clearInterval(timer); }
+function stop(){ clearInterval(timer); if(anim) map.removeLayer(anim); }
+
+function sync(){ let i=document.getElementById("slider").value; let d=dates[i]; document.getElementById("date").value=d; document.getElementById("label").innerText=d; render(d); }
+function prevDay(){ document.getElementById("slider").value=Math.max(0,document.getElementById("slider").value-1); sync(); }
+function nextDay(){ document.getElementById("slider").value=Math.min(dates.length-1,Number(document.getElementById("slider").value)+1); sync(); }
+function loadDate(){ let i=dates.indexOf(document.getElementById("date").value); if(i>=0){ document.getElementById("slider").value=i; sync(); } }
+document.getElementById("slider").oninput=sync;
+
+async function init(){ try { let res=await fetch(FILE); data=await res.json(); dates=getDates(); document.getElementById("slider").max=dates.length-1; document.getElementById("date").value=dates[0]; render(dates[0]); } catch (e) { alert("파일 로드 실패. 웹 서버에서 실행하세요."); } }
+init();
+</script>
+</body>
+</html>

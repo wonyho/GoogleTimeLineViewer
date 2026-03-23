@@ -1,0 +1,14 @@
+# Exclude generated/local data files
+TimeLine20260321.json
+TimeLine*.json
+places.json
+Map_*.html
+
+# Exclude all subdirectories (and their contents)
+*/
+
+# Exclude root files except the ones to publish
+.DS_Store
+Records.json
+archive_browser.html
+data.json
