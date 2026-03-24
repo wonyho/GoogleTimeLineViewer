@@ -86,6 +86,7 @@ if (HAS_API) {
 }
 
 const FILE="TimeLine20260321.json";
+const PLACES_FILE="places.json";
 const map=L.map('map').setView([36.5,127.5],8);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
@@ -190,8 +191,10 @@ function render(d){
   if(seg.visit && seg.visit.topCandidate && seg.visit.topCandidate.placeLocation){
     let origLoc=parseLL(seg.visit.topCandidate.placeLocation.latLng);
     let savedObj = findPlaceObj(origLoc[0], origLoc[1]);
-    let name = savedObj && savedObj.name ? savedObj.name : null;
-    let placeId = savedObj ? savedObj.placeId : null;
+    let autoName = seg.visit.topCandidate.name || null;
+    let autoPlaceId = seg.visit.topCandidate.placeId || null;
+    let name = savedObj && savedObj.name ? savedObj.name : autoName;
+    let placeId = savedObj && savedObj.placeId ? savedObj.placeId : autoPlaceId;
     let customUrl = savedObj ? savedObj.customUrl : null; 
     
     let displayLoc = (savedObj && savedObj.customLat) ? [savedObj.customLat, savedObj.customLng] : origLoc;
@@ -241,7 +244,7 @@ function render(d){
 
     layers.push(m); bounds.push(displayLoc);
     let st = new Date(seg.startTime), et = new Date(seg.endTime);
-    if(name) places.push({origLat: origLoc[0], origLng: origLoc[1], displayLat: displayLoc[0], displayLng: displayLoc[1], h: (et-st)/3600000});
+    if(name) places.push({origLat: origLoc[0], origLng: origLoc[1], displayLat: displayLoc[0], displayLng: displayLoc[1], h: (et-st)/3600000, defaultName: autoName});
   }
  });
 
@@ -255,7 +258,7 @@ function renderPlaces(list){
  let div=document.getElementById("places"); div.innerHTML="";
  list.forEach(p=>{
   let saved = findPlaceObj(p.origLat, p.origLng);
-  let name = saved && saved.name ? saved.name : "미등록";
+  let name = saved && saved.name ? saved.name : (p.defaultName || "미등록");
   let safeName = name.replace(/'/g, "\\'"); 
   let hasLink = saved && saved.customUrl ? "🔗" : "";
 
@@ -417,7 +420,26 @@ function nextDay(){ document.getElementById("slider").value=Math.min(dates.lengt
 function loadDate(){ let i=dates.indexOf(document.getElementById("date").value); if(i>=0){ document.getElementById("slider").value=i; sync(); } }
 document.getElementById("slider").oninput=sync;
 
-async function init(){ try { let res=await fetch(FILE); data=await res.json(); dates=getDates(); document.getElementById("slider").max=dates.length-1; document.getElementById("date").value=dates[0]; render(dates[0]); } catch (e) { alert("파일 로드 실패. 웹 서버에서 실행하세요."); } }
+async function loadPlacesFile(){
+  try{
+    let res = await fetch(PLACES_FILE);
+    if(!res.ok) return;
+    let imported = await res.json();
+    if(!Array.isArray(imported)) return;
+    imported.forEach(p=>{
+      if(typeof p.lat!=="number" || typeof p.lng!=="number") return;
+      if(!findPlaceObj(p.lat,p.lng)) placeDB.push(p);
+    });
+    localStorage.setItem("places", JSON.stringify(placeDB));
+  }catch(e){}
+}
+
+async function init(){
+  try {
+    await loadPlacesFile();
+    let res=await fetch(FILE); data=await res.json(); dates=getDates(); document.getElementById("slider").max=dates.length-1; document.getElementById("date").value=dates[0]; render(dates[0]);
+  } catch (e) { alert("파일 로드 실패. 웹 서버에서 실행하세요."); }
+}
 init();
 </script>
 </body>

@@ -34,6 +34,38 @@ Google Takeout에서 받은 **Location History (Timeline)** JSON을 [Leaflet](ht
 
 4. JSON에는 **이동·체류 등 민감한 위치 정보**가 들어갑니다. GitHub 등에 올릴 때는 **공개 저장소에 원본 JSON을 포함하지 않는 것**을 권장합니다.
 
+## 장소명 전처리 (추천)
+
+`merge_place_names.py`는 아래를 한 번에 수행합니다.
+
+- `data.json` + `Location History (Timeline)/data/**/*.json`에서 `placeId -> name` 사전 수집
+- `TimeLine20260321.json`의 `semanticSegments[].visit.topCandidate.name` 채우기
+- 뷰어에서 바로 쓸 수 있는 `places.json` 생성
+
+프로젝트 루트에서:
+
+```bash
+cd "/Volumes/Samsung_T5/GooglePhoto/GoogleTimeLine"
+python3 merge_place_names.py \
+  --source data.json \
+  --source-dir "Location History (Timeline)/data" \
+  --timeline TimeLine20260321.json \
+  --output-timeline TimeLine20260321.enriched.json \
+  --output-places places.json
+```
+
+완료 후 `TimeLineViewer.html`의 `FILE`을 결과 파일로 바꾸면 됩니다.
+
+```javascript
+const FILE = "TimeLine20260321.enriched.json";
+```
+
+참고:
+
+- 뷰어는 시작 시 같은 폴더의 `places.json`을 자동 로드합니다.
+- 이미 브라우저 `localStorage`에 저장된 값이 있으면 그 값이 우선됩니다.
+- 즉, 전처리 `places.json`은 기본값(초기값) 역할을 하고, 수동 수정값은 그대로 유지됩니다.
+
 ## 실행 방법
 
 `fetch()`로 같은 폴더의 JSON을 읽기 때문에, **그냥 파일을 더블클릭(`file://`)으로 열면** 브라우저 보안 때문에 로드가 실패할 수 있습니다. **로컬 HTTP 서버**에서 여는 것을 권장합니다.
